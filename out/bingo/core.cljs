@@ -2,7 +2,7 @@
   (:require-macros [cljs.core.async.macros :refer [go]])
   (:require [om.core :as om :include-macros true]
             [om.dom :as dom :include-macros true]
-            [cljs.core.async :refer [put! chan <! alts!]]))
+            [cljs.core.async :refer [put! chan <!]]))
 
 (enable-console-print!)
 
@@ -53,38 +53,9 @@
   ))
   
 (def bingo-state (atom (init-state)))
+
+(def channel (chan))
   
-(defn render-cell [cell toggle row col]
-  (dom/td
-    #js {:onClick (if (:free cell) nil (fn [e] (put! toggle [row col])))
-         :className (if (:selected cell) "selected" "")}
-    (:text cell)))
-
-(defn render-card [rows toggle]
-  (apply dom/table nil
-    (concat
-      [(apply dom/tr nil 
-        (map #(dom/th nil %) "BINGO"))]
-      (map
-        (fn [row row-index]
-          (apply dom/tr nil
-            (map 
-              (fn [cell col-index]
-                (render-cell cell toggle row-index col-index)) 
-              row range5)))
-        rows range5))))
-
-(defn handle-events [app owner]
-  (let [reset (om/get-state owner :reset)
-        toggle (om/get-state owner :toggle)]
-    (go (while true
-      (let [[v ch] (alts! [reset toggle])]
-        (apply om/transact! app
-          (cond
-            (= ch reset) [init-state]
-            (= ch toggle) (let [[row col] v]
-              [[row col :selected] not]))))))))
-
 (defn is-winner [rows]
   (some                         ; Do any of the following lines of five cells
     (partial every? :selected)  ; have every cell selected?
@@ -92,29 +63,40 @@
       rows                                         ; Horizontal lines
       (map (fn [n] (map #(nth % n) rows)) range5)  ; Vertical lines
       [(map nth rows range5)                       ; Diagonal top-left to bot-right line
-       (map nth rows (reverse range5))]            ; Diagonal top-right to bot-left line
-    )))    
+       (map nth rows (reverse range5))])))         ; Diagonal top-right to bot-left line
+
+(defn render-screen [rows]
+  (dom/div nil
+    (dom/h1 nil "Washington Metrorail")
+    (apply dom/table nil
+      (concat
+        [(apply dom/tr nil
+          (map #(dom/th nil %) "BINGO"))]
+        (for [[row row-index] (map list rows range5)]
+          (apply dom/tr nil
+            (for [[cell col-index] (map list row range5)]
+              (dom/td
+               #js {:onClick (if-not (:free cell) #(put! channel [:toggle row-index col-index]))
+                    :className (if (:selected cell) "selected")}
+               (:text cell)))))))
+    (if (is-winner @bingo-state)
+      (dom/p #js {:className "win"} "Congratulations, you win!  Now stand up and yell, BINGO!")
+      (dom/p nil "Click squares to mark conditions you notice..."))
+    (dom/p nil (dom/button #js {:onClick #(put! channel [:reset])} "Reset card"))))
+
+(defn handle-events [app owner]
+  (go
+    (while true
+      (let [[action row col] (<! channel)]
+        (apply om/transact! app
+          (case action
+            :reset [init-state]
+            :toggle [[row col :selected] not]))))))
 
 (defn bingo-app [app owner]
   (reify
-    om/IInitState
-    (init-state [_]
-      {:reset (chan), :toggle (chan)})
-      
-    om/IWillMount
-    (will-mount [_]
-      (handle-events app owner))
-      
-    om/IRenderState
-    (render-state [_ {:keys [reset toggle]}]
-      (dom/div nil
-        (dom/h1 nil "Washington Metrorail")
-        (render-card @bingo-state toggle)
-        (if (is-winner @bingo-state)
-          (dom/p #js {:className "win"} "Congratulations, you win!  Now stand up and yell, BINGO!")
-          (dom/p nil "Click squares to mark conditions you notice..."))
-        (dom/p nil (dom/button #js {:onClick (fn [e] (put! reset true))} "Reset card"))))
-  ))
+    om/IWillMount (will-mount [_] (handle-events app owner))
+    om/IRenderState (render-state [_ _] (render-screen @bingo-state))))
 
 (om/root 
   bingo-app
